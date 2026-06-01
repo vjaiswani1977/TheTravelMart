@@ -105,7 +105,7 @@ All dummy data is in `lib/data/datasources/`. To connect to your Odoo subscripti
 ## App Store Deployment
 
 1. Open this project in Xcode (on Mac or MacStadium)
-2. Set Bundle ID: `com.travelmart.aviationfest2026`
+2. Set Bundle ID: `com.travelmart.contractorservices`
 3. Sign with your Apple Developer account
 4. Archive → Upload to App Store Connect
 5. TestFlight → App Store

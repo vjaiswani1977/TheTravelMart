@@ -1,71 +1,45 @@
 import 'dart:convert';
-import 'package:http/http.dart' as http;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:http/http.dart' as http;
 import '../data/models/contractor.dart';
-import '../data/models/service_model.dart';
-import '../data/models/user_model.dart';
 import 'api_constants.dart';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// OdooService
-//
-// PURPOSE: All Odoo API calls live here. No screen touches the API directly.
-// USAGE: OdooService.instance.methodName()
-//
-// AUTHENTICATION: Uses Odoo JSON API v2 with Bearer token (API Key)
-// Endpoint pattern: POST /json/2/{model}/{method}
-// Headers: Content-Type, Authorization: bearer {apiKey}, X-Odoo-Database
+// ─── OdooService ─────────────────────────────────────────────────────────────
+// All Odoo API calls live here. Screens never call the API directly.
+// Uses Odoo JSON API v2 with bearer token authentication.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class OdooService {
-  static final OdooService instance = OdooService._internal();
-  OdooService._internal();
+  static final OdooService instance = OdooService._();
+  OdooService._();
 
   final _storage = const FlutterSecureStorage();
-  static const _apiKeyStorageKey = 'odoo_api_key';
-  static const _userIdStorageKey = 'odoo_user_id';
-  static const _partnerIdStorageKey = 'odoo_partner_id';
 
-  // ── AUTH HELPERS ────────────────────────────────────────────────────────────
-
-  Future<String?> getStoredApiKey() async {
-    return await _storage.read(key: _apiKeyStorageKey);
+  // ── Keychain helpers ────────────────────────────────────────────────────────
+  Future<String?> getApiKey()     async => await _storage.read(key: 'odoo_api_key');
+  Future<String?> getEmail()      async => await _storage.read(key: 'odoo_email');
+  Future<int?>    getPartnerId()  async {
+    final v = await _storage.read(key: 'odoo_partner_id');
+    return v != null ? int.tryParse(v) : null;
   }
 
-  Future<void> saveApiKey(String apiKey) async {
-    await _storage.write(key: _apiKeyStorageKey, value: apiKey);
+  Future<void> saveSession({required String email, required String apiKey, required int partnerId}) async {
+    await _storage.write(key: 'odoo_email',      value: email);
+    await _storage.write(key: 'odoo_api_key',    value: apiKey);
+    await _storage.write(key: 'odoo_partner_id', value: partnerId.toString());
   }
 
-  Future<void> saveUserId(String userId) async {
-    await _storage.write(key: _userIdStorageKey, value: userId);
+  Future<void> clearSession() async => await _storage.deleteAll();
+  Future<bool> isLoggedIn()   async {
+    final k = await getApiKey();
+    return k != null && k.isNotEmpty;
   }
 
-  Future<void> savePartnerId(String partnerId) async {
-    await _storage.write(key: _partnerIdStorageKey, value: partnerId);
-  }
-
-  Future<void> clearSession() async {
-    await _storage.deleteAll();
-  }
-
-  Future<bool> isLoggedIn() async {
-    final key = await getStoredApiKey();
-    return key != null && key.isNotEmpty;
-  }
-
-  // ── LOGIN ───────────────────────────────────────────────────────────────────
-
-  /// Authenticate with Odoo using email and API key
-  /// Returns UserModel on success, throws on failure
-  Future<UserModel> login({
-    required String email,
-    required String apiKey,
-  }) async {
-    final url = Uri.parse(
-        '${ApiConstants.odooBaseUrl}/json/2/res.users/search_read');
-
-    final response = await http.post(
-      url,
+  // ── Login ───────────────────────────────────────────────────────────────────
+  // Verifies email + API key against Odoo and saves session locally.
+  Future<Map<String, dynamic>> login({required String email, required String apiKey}) async {
+    final url = Uri.parse('${ApiConstants.odooBaseUrl}/json/2/res.users/search_read');
+    final res = await http.post(url,
       headers: ApiConstants.headers(apiKey),
       body: jsonEncode({
         'domain': [['login', '=', email]],
@@ -73,123 +47,119 @@ class OdooService {
         'limit': 1,
       }),
     );
-
-    if (response.statusCode == 200) {
-      final data = jsonDecode(response.body);
-      if (data is List && data.isNotEmpty) {
-        final userJson = data[0] as Map<String, dynamic>;
-        userJson['uid'] = userJson['id'];
-        userJson['username'] = userJson['login'];
-        final user = UserModel.fromOdooJson(userJson);
-        await saveApiKey(apiKey);
-        await saveUserId(user.id.toString());
-        await savePartnerId(user.partnerId.toString());
-        return user;
+    if (res.statusCode == 200) {
+      final data = jsonDecode(res.body) as List;
+      if (data.isNotEmpty) {
+        final user = data[0] as Map<String, dynamic>;
+        final partnerId = (user['partner_id'] as List).first as int;
+        await saveSession(email: email, apiKey: apiKey, partnerId: partnerId);
+        return {'name': user['name'], 'partnerId': partnerId};
       }
-      throw Exception('User not found');
     }
-    throw Exception('Login failed: ${response.statusCode}');
+    throw Exception('Login failed — check your email and API key');
   }
 
-  // ── CONTRACTORS ─────────────────────────────────────────────────────────────
-
-  /// Fetch all contractors (guides and sitters) from Odoo
+  // ── Fetch contractors ───────────────────────────────────────────────────────
+  // Returns all contacts tagged as Guide or Sitter from Odoo
   Future<List<Contractor>> fetchContractors() async {
-    final apiKey = await getStoredApiKey();
-    if (apiKey == null) throw Exception('Not authenticated');
-
-    final url = Uri.parse(
-        '${ApiConstants.odooBaseUrl}${ApiConstants.partnersEndpoint}');
-
-    final response = await http.post(
-      url,
+    final apiKey = await getApiKey();
+    if (apiKey == null) throw Exception('Not logged in');
+    final url = Uri.parse('${ApiConstants.odooBaseUrl}${ApiConstants.partners}');
+    final res = await http.post(url,
       headers: ApiConstants.headers(apiKey),
       body: jsonEncode({
         'domain': [
           ['category_id.name', 'in', ['Guide', 'Sitter']],
           ['active', '=', true],
         ],
-        'fields': ['id', 'name', 'image_1920', 'phone', 'email',
-                   'comment', 'category_id', 'x_price_per_hour', 'x_rating'],
+        'fields': ['id', 'name', 'image_1920', 'phone', 'email', 'comment', 'category_id'],
         'order': 'name asc',
         'limit': 100,
       }),
     );
-
-    if (response.statusCode == 200) {
-      final data = jsonDecode(response.body) as List;
-      return data.map((json) =>
-          Contractor.fromOdooJson(json as Map<String, dynamic>)).toList();
+    if (res.statusCode == 200) {
+      final data = jsonDecode(res.body) as List;
+      return data.map((j) {
+        final cat = (j['category_id'] as List?)?.lastOrNull?.toString() ?? '';
+        final type = cat.toLowerCase().contains('sitter') ? 'Sitter' : 'Tour Guide';
+        final price = type == 'Tour Guide' ? 35.0 : 30.0;
+        return Contractor(
+          id: j['id'] as int,
+          name: j['name'] as String,
+          serviceType: type,
+          pricePerHour: price,
+          rating: 4.7,
+          imageUrl: '',
+          description: j['comment'] as String? ?? '',
+        );
+      }).toList();
     }
     throw Exception('Failed to fetch contractors');
   }
 
-  // ── PRODUCTS ────────────────────────────────────────────────────────────────
-
-  /// Fetch service products from Odoo (Tour Guide, Sitter)
-  Future<List<ServiceModel>> fetchProducts() async {
-    final apiKey = await getStoredApiKey();
-    if (apiKey == null) throw Exception('Not authenticated');
-
-    final url = Uri.parse(
-        '${ApiConstants.odooBaseUrl}${ApiConstants.productsEndpoint}');
-
-    final response = await http.post(
-      url,
-      headers: ApiConstants.headers(apiKey),
-      body: jsonEncode({
-        'domain': [
-          ['name', 'in', ['Tour Guide - Per Hour', 'Sitter - Per Hour']],
-        ],
-        'fields': ['id', 'name', 'list_price', 'description'],
-      }),
-    );
-
-    if (response.statusCode == 200) {
-      final data = jsonDecode(response.body) as List;
-      return data.map((json) =>
-          ServiceModel.fromOdooJson(json as Map<String, dynamic>)).toList();
-    }
-    throw Exception('Failed to fetch products');
-  }
-
-  // ── BOOKINGS ────────────────────────────────────────────────────────────────
-
-  /// Create a booking (sale.order) in Odoo
+  // ── Create booking (sale.order) ─────────────────────────────────────────────
   Future<int> createBooking({
     required int partnerId,
-    required int contractorPartnerId,
     required int productId,
     required int hours,
     required double pricePerHour,
     required String contractorName,
   }) async {
-    final apiKey = await getStoredApiKey();
-    if (apiKey == null) throw Exception('Not authenticated');
-
-    final url = Uri.parse(
-        '${ApiConstants.odooBaseUrl}${ApiConstants.saleOrderEndpoint}');
-
-    final response = await http.post(
-      url,
+    final apiKey = await getApiKey();
+    if (apiKey == null) throw Exception('Not logged in');
+    final url = Uri.parse('${ApiConstants.odooBaseUrl}${ApiConstants.saleCreate}');
+    final res = await http.post(url,
       headers: ApiConstants.headers(apiKey),
       body: jsonEncode({
         'partner_id': partnerId,
-        'order_line': [
-          [0, 0, {
-            'product_id': productId,
-            'product_uom_qty': hours,
-            'price_unit': pricePerHour,
-            'name': '$contractorName - $hours hour(s)',
-          }]
-        ],
+        'order_line': [[0, 0, {
+          'product_id': productId,
+          'product_uom_qty': hours,
+          'price_unit': pricePerHour,
+          'name': '$contractorName — $hours hr(s)',
+        }]],
       }),
     );
-
-    if (response.statusCode == 200) {
-      final data = jsonDecode(response.body);
-      return data as int;
-    }
+    if (res.statusCode == 200) return jsonDecode(res.body) as int;
     throw Exception('Failed to create booking');
+  }
+
+  // ── Confirm booking ─────────────────────────────────────────────────────────
+  Future<void> confirmBooking(int orderId) async {
+    final apiKey = await getApiKey();
+    if (apiKey == null) throw Exception('Not logged in');
+    final url = Uri.parse('${ApiConstants.odooBaseUrl}${ApiConstants.saleConfirm}');
+    await http.post(url,
+      headers: ApiConstants.headers(apiKey),
+      body: jsonEncode({'args': [[orderId]]}),
+    );
+  }
+
+  // ── Check in ────────────────────────────────────────────────────────────────
+  Future<void> checkIn(int orderId) async {
+    final apiKey = await getApiKey();
+    if (apiKey == null) throw Exception('Not logged in');
+    final url = Uri.parse('${ApiConstants.odooBaseUrl}${ApiConstants.saleWrite}');
+    final now = DateTime.now().toUtc().toIso8601String();
+    await http.post(url,
+      headers: ApiConstants.headers(apiKey),
+      body: jsonEncode({
+        'args': [[orderId], {'x_checkin_time': now, 'x_checkin_status': 'checked_in'}],
+      }),
+    );
+  }
+
+  // ── Check out ───────────────────────────────────────────────────────────────
+  Future<void> checkOut(int orderId) async {
+    final apiKey = await getApiKey();
+    if (apiKey == null) throw Exception('Not logged in');
+    final url = Uri.parse('${ApiConstants.odooBaseUrl}${ApiConstants.saleWrite}');
+    final now = DateTime.now().toUtc().toIso8601String();
+    await http.post(url,
+      headers: ApiConstants.headers(apiKey),
+      body: jsonEncode({
+        'args': [[orderId], {'x_checkout_time': now, 'x_checkin_status': 'completed'}],
+      }),
+    );
   }
 }

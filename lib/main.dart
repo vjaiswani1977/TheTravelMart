@@ -1,28 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'ui/theme/app_theme.dart';
+import 'package:provider/provider.dart';
+import 'data/datasources/cart_provider.dart';
+import 'data/datasources/session_provider.dart';
 import 'screens/login_screen.dart';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// TravelMart - Aviation Fest 2026
-// Entry point of the Flutter application
-// ─────────────────────────────────────────────────────────────────────────────
+import 'ui/theme/app_theme.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-
-  // Lock to portrait mode for mobile app
-  SystemChrome.setPreferredOrientations([
-    DeviceOrientation.portraitUp,
-    DeviceOrientation.portraitDown,
-  ]);
-
-  // Set status bar style
+  SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.light,
   ));
-
   runApp(const TravelMartApp());
 }
 
@@ -31,11 +21,17 @@ class TravelMartApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'TravelMart - Aviation Fest 2026',
-      debugShowCheckedModeBanner: false,
-      theme: AppTheme.theme,
-      home: const LoginScreen(),
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => SessionProvider()),
+        ChangeNotifierProvider(create: (_) => CartProvider()),
+      ],
+      child: MaterialApp(
+        title: 'TravelMart - Aviation Fest 2026',
+        debugShowCheckedModeBanner: false,
+        theme: AppTheme.theme,
+        home: const LoginScreen(),
+      ),
     );
   }
 }

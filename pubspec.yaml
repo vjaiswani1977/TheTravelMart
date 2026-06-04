@@ -1,7 +1,7 @@
 name: travelmart
 description: TravelMart - Aviation Fest 2026 Service Booking App
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.0+2
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
